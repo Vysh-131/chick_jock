@@ -1,2 +1,2 @@
-# Randomcodes_
-random codes i will be uploading
+# Chicken Jumping Game using Js
+.....
