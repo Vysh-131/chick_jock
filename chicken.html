@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Pixel Chicken Jump</title>
+  <style>
+    body {
+      background: #333;
+      color: #fff;
+      font-family: 'Courier New', Courier, monospace;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+    #game-container {
+      border: 4px solid #111;
+      box-shadow: 0 0 0 4px #555;
+      background: #222;
+      padding: 1rem;
+      position: relative; /* Needed for start screen positioning */
+    }
+    canvas {
+      display: block;
+      background: #87CEEB; /* Sky Blue */
+      border: 4px solid #111;
+      image-rendering: pixelated;
+      image-rendering: -moz-crisp-edges;
+      image-rendering: crisp-edges;
+    }
+    #info, #controls { text-align: center; }
+    #info { margin-bottom: 1rem; }
+    #controls { margin-top: 1rem; }
+    .pixel-button {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 1rem;
+      color: #fff;
+      background: #4CAF50;
+      border: 3px solid #111;
+      padding: 10px 20px;
+      cursor: pointer;
+      box-shadow: 0 4px #111;
+      margin: 0 5px;
+    }
+    .pixel-button:active {
+      transform: translateY(2px);
+      box-shadow: 0 2px #111;
+    }
+    #retryBtn { background: #f44336; }
+    #pauseBtn { background: #ff9800; }
+    #startBtn {
+        background: #2196F3; /* Blue */
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 1.5rem;
+        padding: 20px 40px;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <div id="info">
+      <h2>Pixel Chicken Jump 🐔</h2>
+      <p>Yell, clap, or press <b>Space</b> to JUMP.</p>
+      <p id="status" style="color:#90EE90;">Click "Start Mic" to enable voice control.</p>
+      <p>High Score: <b id="highScore">0</b></p>
+    </div>
+    <canvas id="game" width="800" height="400"></canvas>
+    <div id="controls">
+      <button id="micBtn" class="pixel-button">Start Mic</button>
+      <button id="pauseBtn" class="pixel-button">Pause</button>
+      <button id="retryBtn" class="pixel-button" style="display:none;">Retry</button>
+    </div>
+    <button id="startBtn" class="pixel-button">Start Game</button>
+  </div>
+
+<script>
+/* ========== Game Setup ========== */
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const CHICKEN_HEIGHT = 40;
+const FLOOR_Y = H - 50; // Y-position of the chicken's TOP when on the ground
+const GROUND_LEVEL = FLOOR_Y + CHICKEN_HEIGHT; // Y-position of the actual ground
+
+// Game State
+let chicken, gravity, obstacles, obstacleTimer, obstacleSpeed, score, running, gameOver, isPaused, highScore, clouds, gameStarted;
+
+function initState() {
+  chicken = { x: 100, y: FLOOR_Y, w: 40, h: CHICKEN_HEIGHT, vy: 0, isJumping: false };
+  gravity = 0.7;
+  obstacles = [];
+  obstacleTimer = 0;
+  obstacleSpeed = 5;
+  score = 0;
+  running = true;
+  gameOver = false;
+  isPaused = false;
+  gameStarted = false;
+  highScore = localStorage.getItem('pixelChickenHighScore') || 0;
+  document.getElementById('highScore').textContent = highScore;
+  clouds = [{x:100, y:100, w:80}, {x:400, y:60, w:120}, {x:700, y:120, w:100}];
+}
+
+/* ========== Audio Feedback ========== */
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playTone(freq, duration = 0.1) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.frequency.value = freq;
+  o.type = "square";
+  g.gain.setValueAtTime(0.1, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + duration);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(); o.stop(audioCtx.currentTime + duration);
+}
+const playJump = () => playTone(800);
+const playCollision = () => playTone(150, 0.3);
+const playVictory = () => playTone(1200, 0.5);
+const playScore = () => playTone(1000);
+
+/* ========== Draw Helpers ========== */
+function drawChicken() {
+  const { x, y } = chicken;
+  ctx.fillStyle = '#FFD54F';
+  ctx.fillRect(x, y, 40, 40);
+  ctx.fillStyle = '#FF9800';
+  ctx.fillRect(x + 40, y + 15, 10, 5);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(x + 30, y + 10, 5, 5);
+}
+
+// ** MODIFIED FUNCTION **
+function drawObstacle(ob) {
+  // Pipes are drawn from the ground up.
+  const pipeTopY = GROUND_LEVEL - ob.h;
+  // Main pipe body
+  ctx.fillStyle = '#4CAF50';
+  ctx.fillRect(ob.x, pipeTopY, ob.w, ob.h);
+  // Pipe lip
+  ctx.fillStyle = '#388E3C';
+  ctx.fillRect(ob.x - 5, pipeTopY, ob.w + 10, 20);
+}
+
+function drawClouds() {
+  ctx.fillStyle = '#FFFFFF';
+  clouds.forEach(cloud => {
+    ctx.fillRect(cloud.x, cloud.y, cloud.w, 20);
+    ctx.fillRect(cloud.x + 20, cloud.y - 10, cloud.w - 40, 40);
+  });
+}
+
+/* ========== Game Logic ========== */
+function doJump() {
+  if (!chicken.isJumping && !gameOver) {
+    chicken.vy = -14;
+    chicken.isJumping = true;
+    //playJump();
+  }
+}
+
+function resetGame() {
+  initState();
+  gameStarted = true; // Skip start screen on retry
+  document.getElementById('status').textContent = 'Mic: idle';
+  document.getElementById('retryBtn').style.display = 'none';
+  document.getElementById('pauseBtn').textContent = 'Pause';
+  document.getElementById('pauseBtn').disabled = false;
+}
+
+function update() {
+  // Movement
+  chicken.vy += gravity;
+  chicken.y += chicken.vy;
+  if (chicken.y >= FLOOR_Y) {
+    chicken.y = FLOOR_Y; chicken.vy = 0; chicken.isJumping = false;
+  }
+  
+  // Cloud movement
+  clouds.forEach(cloud => {
+      cloud.x -= obstacleSpeed * 0.2;
+      if (cloud.x + cloud.w < 0) cloud.x = W;
+  });
+
+  // ** MODIFIED: Obstacle generation (only pipes) **
+  obstacleTimer++;
+  if (obstacleTimer > 120 / (obstacleSpeed / 5)) {
+    obstacleTimer = 0;
+    obstacles.push({
+      x: W,
+      w: 40,
+      h: 30 + Math.random() * 40, // Shorter pipe height
+      type: 'pipe'
+    });
+  }
+
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    let ob = obstacles[i];
+    ob.x -= obstacleSpeed;
+    if (ob.x + ob.w < 0) {
+      obstacles.splice(i, 1);
+      score++;
+      playScore();
+      if (score > highScore) {
+        highScore = score;
+        document.getElementById('highScore').textContent = highScore;
+        localStorage.setItem('pixelChickenHighScore', highScore);
+      }
+      if (score > 0 && score % 3 === 0) obstacleSpeed += 0.3;
+    }
+  }
+
+  // ** MODIFIED: Collision check (only for pipes) **
+  const chickenRect = { x: chicken.x, y: chicken.y, w: chicken.w, h: chicken.h };
+  for (const ob of obstacles) {
+    const obRect = {
+        x: ob.x,
+        y: GROUND_LEVEL - ob.h,
+        w: ob.w,
+        h: ob.h
+    };
+      
+    if (chickenRect.x < obRect.x + obRect.w && chickenRect.x + chickenRect.w > obRect.x &&
+        chickenRect.y < obRect.y + obRect.h && chickenRect.y + chickenRect.h > obRect.y) {
+      playCollision();
+      running = false;
+      gameOver = true;
+      document.getElementById('status').textContent = `Game Over! Your score: ${score}`;
+      document.getElementById('retryBtn').style.display = 'inline-block';
+      document.getElementById('pauseBtn').disabled = true;
+    }
+  }
+
+  // Victory condition
+  if (score >= 20 && !gameOver) {
+    playVictory(); running = false; gameOver = true;
+    document.getElementById('status').textContent = 'Victory! You are a master! 🎉';
+    document.getElementById('retryBtn').style.display = 'inline-block';
+    document.getElementById('pauseBtn').disabled = true;
+  }
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  drawClouds();
+  
+  // Floor
+  ctx.fillStyle = '#689F38'; // Green grass
+  ctx.fillRect(0, GROUND_LEVEL, W, H - GROUND_LEVEL);
+  ctx.fillStyle = '#795548'; // Brown dirt
+  ctx.fillRect(0, GROUND_LEVEL + 5, W, H - GROUND_LEVEL - 5);
+
+  drawChicken();
+  if (gameStarted) {
+    obstacles.forEach(drawObstacle);
+  }
+
+  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 4;
+  ctx.font = '24px "Courier New", Courier, monospace';
+  ctx.strokeText('Score: ' + score, 10, 30);
+  ctx.fillText('Score: ' + score, 10, 30);
+
+  if (isPaused) {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff';
+    ctx.font = '60px "Courier New", Courier, monospace';
+    ctx.textAlign = 'center';
+    ctx.strokeText('PAUSED', W / 2, H / 2);
+    ctx.fillText('PAUSED', W / 2, H / 2);
+    ctx.textAlign = 'left';
+  }
+}
+
+function loop() {
+  if (gameStarted && !isPaused && running) {
+    update();
+  }
+  render();
+  requestAnimationFrame(loop);
+}
+
+/* ========== Controls & Mic ========== */
+window.addEventListener('keydown', e => {
+  if (e.code === "Space") {
+    // Allow jump only if the game has started
+    if(gameStarted) doJump();
+  }
+});
+
+let micEnabled = false, micStream = null;
+// ** REVISED FUNCTION FOR NOISE CANCELLATION **
+async function toggleMic() {
+  // New state variables for noise filtering
+  let baselineLevel = 0;   // Stores the average ambient noise level
+  let lastJumpTime = 0;    // Used for jump cooldown
+  const cooldown = 500;    // Cooldown in milliseconds (half a second)
+  const sensitivity = 1.6; // How much louder a sound must be than the baseline (1.6 = 60% louder)
+  const minThreshold = 25; // An absolute minimum volume to prevent jumps in silence
+
+  if (!micEnabled) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStream = stream;
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      source.connect(analyser);
+      micEnabled = true;
+      document.getElementById('status').textContent = 'Mic: Calibrating...';
+      document.getElementById('micBtn').textContent = 'Stop Mic';
+
+      function detect() {
+        if (!micEnabled) return;
+        
+        analyser.getByteFrequencyData(data);
+        let avg = data.reduce((a, b) => a + b) / data.length;
+        const now = Date.now();
+
+        // 1. Check if the sound is a significant spike above the baseline AND above a minimum threshold
+        if (avg > baselineLevel * sensitivity && avg > minThreshold && now - lastJumpTime > cooldown) {
+          // --- This is a valid jump sound ---
+          doJump();
+          lastJumpTime = now; // Start the cooldown
+        } else {
+          // --- This is just background noise ---
+          // 2. Slowly adjust the baseline to the current ambient noise level
+          // Using a smoothing factor means it adapts slowly to new environments.
+          baselineLevel = baselineLevel * 0.995 + avg * 0.005;
+        }
+
+        // Update status for user feedback
+        if (now - lastJumpTime < cooldown) {
+            document.getElementById('status').textContent = 'Mic: Cooldown';
+        } else {
+            document.getElementById('status').textContent = 'Mic: Listening';
+        }
+
+        requestAnimationFrame(detect);
+      }
+      detect();
+    } catch (err) {
+      document.getElementById('status').textContent = 'Mic error: ' + err.message;
+    }
+  } else {
+    if (micStream) micStream.getTracks().forEach(track => track.stop());
+    micStream = null;
+    micEnabled = false;
+    document.getElementById('status').textContent = 'Mic: stopped';
+    document.getElementById('micBtn').textContent = 'Start Mic';
+  }
+}
+
+// Initial setup
+document.getElementById('info').style.display = 'none';
+document.getElementById('controls').style.display = 'none';
+
+document.getElementById('startBtn').addEventListener('click', () => {
+    gameStarted = true;
+    document.getElementById('startBtn').style.display = 'none';
+    document.getElementById('info').style.display = 'block';
+    document.getElementById('controls').style.display = 'block';
+});
+
+document.getElementById('micBtn').addEventListener('click', toggleMic);
+document.getElementById('retryBtn').addEventListener('click', resetGame);
+document.getElementById('pauseBtn').addEventListener('click', () => {
+  if (gameOver || !gameStarted) return;
+  isPaused = !isPaused;
+  document.getElementById('pauseBtn').textContent = isPaused ? 'Resume' : 'Pause';
+  document.getElementById('status').textContent = isPaused ? 'Game Paused' : (micEnabled ? 'Mic: listening' : 'Mic: idle');
+});
+
+// Initial game state setup and start loop
+initState();
+loop();
+</script>
+</body>
+</html>
